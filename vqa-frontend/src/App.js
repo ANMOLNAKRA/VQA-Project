@@ -1,11 +1,9 @@
 import React, { useState, useRef, useEffect } from "react";
 import "./App.css";
 
-const ImageIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-    <circle cx="8.5" cy="8.5" r="1.5"></circle>
-    <polyline points="21 15 16 10 5 21"></polyline>
+const PaperclipIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
   </svg>
 );
 
@@ -14,6 +12,12 @@ const SendIcon = () => (
     <line x1="22" y1="2" x2="11" y2="13"></line>
     <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
   </svg>
+);
+
+const BotAvatar = ({ small = false }) => (
+  <div className={`bot-avatar ${small ? "small" : ""}`}>
+    <RobotIcon />
+  </div>
 );
 
 const RobotIcon = () => (
@@ -56,7 +60,7 @@ const formatTime = (dateString) => {
 };
 
 function App() {
-  const [image, setImage] = useState(null);
+  const [stagedImages, setStagedImages] = useState([]);
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -65,6 +69,8 @@ function App() {
   const [currentSessionId, setCurrentSessionId] = useState(null);
   const chatBoxRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  const hasImageContext = messages.some((message) => message.images?.length || message.image);
 
   const fetchHistory = async () => {
     try {
@@ -89,26 +95,14 @@ function App() {
 
   const handleSessionClick = (session) => {
     setCurrentSessionId(session.session_id);
-    const formattedMessages = [];
-    let sessionImage = null;
-    session.messages.forEach((chat, index) => {
-      if (index === 0 && chat.image) {
-        sessionImage = chat.image;
-      }
-      formattedMessages.push({ 
-        type: "user", 
-        text: chat.question, 
-        time: formatTime(chat.times),
-        image: index === 0 ? chat.image : null
-      });
-      formattedMessages.push({ 
-        type: "bot", 
-        text: chat.answer, 
-        time: formatTime(chat.times)
-      });
-    });
+    const formattedMessages = session.messages.map((chat) => ({
+      type: chat.type,
+      text: chat.text || chat.question || chat.answer || "",
+      time: formatTime(chat.times || chat.time),
+      images: chat.images || (chat.image ? [chat.image] : []),
+    }));
     setMessages(formattedMessages);
-    setImage(sessionImage);
+    clearStagedImages();
     if (window.innerWidth <= 768) {
       setSidebarOpen(false);
     }
@@ -117,30 +111,66 @@ function App() {
   const handleNewChat = () => {
     setCurrentSessionId(null);
     setMessages([]);
-    setImage(null);
+    clearStagedImages();
     if (window.innerWidth <= 768) {
       setSidebarOpen(false);
     }
   };
 
-  const handleSubmit = async () => {
-    if ((!image && !currentSessionId) || !question.trim() || loading) return;
+  const stageFiles = (fileList) => {
+    const validFiles = Array.from(fileList).filter((file) => {
+      if (!file.type.startsWith("image/")) {
+        alert("please upload a valid image.");
+        return false;
+      }
 
-    const isFile = image && typeof image !== 'string';
-    let imageUrl = null;
-    if (isFile) {
-      imageUrl = URL.createObjectURL(image);
-    } else if (image && typeof image === 'string') {
-      imageUrl = image;
+      if (file.size > 5 * 1024 * 1024) {
+        alert("image is too large and must be under 5 MB.");
+        return false;
+      }
+
+      return true;
+    });
+
+    if (!validFiles.length) return;
+
+    setStagedImages((prev) => [
+      ...prev,
+      ...validFiles.map((file) => ({
+        file,
+        previewUrl: URL.createObjectURL(file),
+      })),
+    ]);
+  };
+
+  const clearStagedImages = () => {
+    setStagedImages((prev) => {
+      prev.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+      return [];
+    });
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
     }
+  };
 
-    const isFirstMessage = messages.length === 0;
+  const removeStagedImage = (indexToRemove) => {
+    setStagedImages((prev) => {
+      const imageToRemove = prev[indexToRemove];
+      if (imageToRemove) {
+        URL.revokeObjectURL(imageToRemove.previewUrl);
+      }
+      return prev.filter((_, index) => index !== indexToRemove);
+    });
+  };
+
+  const handleSubmit = async () => {
+    if ((!stagedImages.length && !currentSessionId && !hasImageContext) || !question.trim() || loading) return;
 
     const userMessage = {
       type: "user",
       text: question,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      image: isFirstMessage ? imageUrl : null,
+      images: stagedImages.map((image) => image.previewUrl),
     };
 
     setMessages((prev) => [...prev, userMessage]);
@@ -153,12 +183,14 @@ function App() {
     }
 
     const formData = new FormData();
-    if (isFile) {
-      formData.append("file", image);
-    }
+    stagedImages.forEach((image) => {
+      formData.append("files", image.file);
+    });
     formData.append("question", question);
     formData.append("history", JSON.stringify(messages));
     formData.append("session_id", sessionId);
+
+    setStagedImages([]);
 
     try {
       const response = await fetch(`${process.env.REACT_APP_API_URL}/ask`, {
@@ -167,6 +199,9 @@ function App() {
       });
 
       const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Request failed");
+      }
 
       const botMessage = {
         type: "bot",
@@ -183,7 +218,6 @@ function App() {
 
     setLoading(false);
     setQuestion("");
-    // Persist image across turns; do not clear it here
 
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -237,21 +271,36 @@ function App() {
             <button className="menu-btn" onClick={() => setSidebarOpen(!sidebarOpen)}>
               <MenuIcon />
             </button>
-            <h1>VQA Chatbot</h1>
+            <div className="chat-title">
+              <BotAvatar small />
+              <h1>VQA Chatbot</h1>
+            </div>
           </div>
 
           <div className="chat-box" ref={chatBoxRef}>
             {messages.length === 0 ? (
               <div className="empty-state">
-                <RobotIcon />
+                <BotAvatar />
                 <p>Upload an image and ask a question to get started.</p>
               </div>
             ) : (
               messages.map((msg, index) => (
                 <div key={index} className={`msg-wrapper ${msg.type}`}>
-                  <div className="msg-bubble">
-                    {msg.image && <img src={msg.image} alt="Uploaded content" />}
-                    {msg.text && <><p style={{ margin: 0 }}>{msg.text}</p><span className="message-time">{msg.time}</span></>}
+                  <div className="message-line">
+                    {msg.type === "bot" && <BotAvatar small />}
+                    <div className="message-stack">
+                      <div className="msg-bubble">
+                        {(msg.images || (msg.image ? [msg.image] : [])).length > 0 && (
+                          <div className="message-images">
+                            {(msg.images || (msg.image ? [msg.image] : [])).map((imageUrl, imageIndex) => (
+                              <img key={`${index}-${imageIndex}`} src={imageUrl} alt="Uploaded content" />
+                            ))}
+                          </div>
+                        )}
+                        {msg.text && <p>{msg.text}</p>}
+                      </div>
+                      {msg.time && <span className="message-time">{msg.time}</span>}
+                    </div>
                   </div>
                 </div>
               ))
@@ -259,49 +308,54 @@ function App() {
 
             {loading && (
               <div className="msg-wrapper bot">
-                <div className="msg-bubble">
-                  <div className="thinking-indicator">
-                    <div className="dot"></div>
-                    <div className="dot"></div>
-                    <div className="dot"></div>
+                <div className="message-line">
+                  <BotAvatar small />
+                  <div className="message-stack">
+                    <div className="msg-bubble">
+                      <div className="thinking-indicator">
+                        <div className="dot"></div>
+                        <div className="dot"></div>
+                        <div className="dot"></div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
             )}
           </div>
 
-          <div className="input-area">
-            <label className={`upload-label ${image ? 'active' : ''}`} title={image ? "Active Image" : "Upload Image"}>
-              {image ? (
-                <img src={typeof image === 'string' ? image : URL.createObjectURL(image)} alt="active context" style={{ width: '24px', height: '24px', borderRadius: '4px', objectFit: 'cover' }} />
-              ) : (
-                <ImageIcon />
-              )}
-              {!image && (
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  accept="image/*"
-                  className="hidden-file-input"
-                  onChange={(e) => {
-                    const file = e.target.files[0];
+          <div
+            className="input-area"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              stageFiles(e.dataTransfer.files);
+            }}
+          >
+            {stagedImages.length > 0 && (
+              <div className="staged-images">
+                {stagedImages.map((image, index) => (
+                  <div className="staged-image" key={image.previewUrl}>
+                    <img src={image.previewUrl} alt="Staged upload" />
+                    <button type="button" onClick={() => removeStagedImage(index)} aria-label="Remove staged image">
+                      x
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
 
-                    if (!file) return;
-
-                    if (!file.type.startsWith("image/")) {
-                      alert("please upload a valid image.");
-                      return;
-                    }
-
-                    if (file.size > 5 * 1024 * 1024) {
-                      alert("image is large too must be under 5 MB ");
-                      return;
-                    }
-
-                    setImage(file);
-                  }}
-                />
-              )}
+            <div className="input-row">
+            <label className={`upload-label ${stagedImages.length ? 'active' : ''}`} title="Attach image">
+                <PaperclipIcon />
+              <input
+                type="file"
+                ref={fileInputRef}
+                accept="image/*"
+                multiple
+                className="hidden-file-input"
+                onChange={(e) => stageFiles(e.target.files)}
+              />
             </label>
 
             <input
@@ -316,10 +370,11 @@ function App() {
             <button
               className="send-btn"
               onClick={handleSubmit}
-              disabled={(!image && !currentSessionId) || !question.trim() || loading}
+              disabled={(!stagedImages.length && !currentSessionId && !hasImageContext) || !question.trim() || loading}
             >
               <SendIcon />
             </button>
+            </div>
           </div>
         </div>
       </div>
